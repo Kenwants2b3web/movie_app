@@ -1,0 +1,11 @@
+# shared colors so every screen looks the same
+BG = "#141414"
+FIELD = "#2b2b2b"
+CARD = "#1f1f1f"
+TOPBAR = "#1a1a1a"
+RED = "#e50914"
+RED_HOVER = "#b20710"
+SIDE = "#8b0a12"
+GRAY = "#9a9a9a"
+GREEN = "#4caf50"
+ERROR = "#ff5252"
