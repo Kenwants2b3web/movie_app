@@ -21,7 +21,9 @@ class App(ctk.CTk):
         scale = ctk.ScalingTracker.get_window_scaling(self)
         x = int((self.winfo_screenwidth() - width * scale) / 2)
         y = int((self.winfo_screenheight() - height * scale) / 2)
-        self.geometry(str(width) + "x" + str(height) + "+" + str(max(x, 0)) + "+" + str(max(y, 0)))
+        x = max(x, 0)
+        y = max(y, 0)
+        self.geometry(str(width) + "x" + str(height) + "+" + str(x) + "+" + str(y))
 
     def clear(self):
         for widget in self.winfo_children():
@@ -29,15 +31,24 @@ class App(ctk.CTk):
 
     def show_login(self):
         self.clear()
+        self.state("normal")
+        self.minsize(1, 1)
         self.center(800, 500)
         self.resizable(False, False)
         LoginFrame(self, self.show_home).pack(fill="both", expand=True)
 
     def show_home(self, username):
+        user_id = database.get_user_id(username)
+        if user_id is None:
+            # should not happen, but never open the home screen without a user
+            self.show_login()
+            return
+
         self.clear()
         self.center(1100, 650)
-        self.resizable(False, False)
-        HomeFrame(self, username, self.show_login).pack(fill="both", expand=True)
+        self.resizable(True, True)
+        self.minsize(980, 560)
+        HomeFrame(self, user_id, username, self.show_login).pack(fill="both", expand=True)
 
 
 if __name__ == "__main__":

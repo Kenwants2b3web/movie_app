@@ -130,6 +130,11 @@ class LoginFrame(ctk.CTkFrame):
         self.password_entry.configure(show=char)
         self.confirm_entry.configure(show=char)
 
+    def button_text(self):
+        if self.mode == "login":
+            return "Login"
+        return "Register"
+
     def switch_mode(self):
         self.message.configure(text="")
 
@@ -152,6 +157,10 @@ class LoginFrame(ctk.CTkFrame):
             self.make_confirm_entry()
 
     def submit(self):
+        # ignore clicks while the last one is still being checked
+        if self.main_button.cget("state") == "disabled":
+            return
+
         username = self.username_entry.get().strip()
         password = self.password_entry.get()
 
@@ -159,19 +168,29 @@ class LoginFrame(ctk.CTkFrame):
             self.show_message("Please fill in all fields.", False)
             return
 
-        if self.mode == "login":
-            ok, msg = auth.login(username, password)
-            if ok:
-                # this screen gets destroyed, so the password is gone too
-                self.on_login(username)
-                return
-            self.show_message(msg, False)
-        else:
+        if self.mode == "register":
             if password != self.confirm_entry.get():
                 self.show_message("Passwords do not match.", False)
                 return
 
+        # hashing takes a moment, so show that something is happening
+        self.main_button.configure(state="disabled", text="Please wait...")
+        self.update_idletasks()
+
+        if self.mode == "login":
+            ok, msg, name = auth.login(username, password)
+        else:
             ok, msg = auth.register(username, password)
+
+        self.main_button.configure(state="normal", text=self.button_text())
+
+        if self.mode == "login":
+            if ok:
+                # this screen gets destroyed, so the password is gone too
+                self.on_login(name)
+                return
+            self.show_message(msg, False)
+        else:
             if ok:
                 # go back to the login view after a successful register
                 self.switch_mode()
