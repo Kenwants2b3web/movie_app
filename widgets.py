@@ -120,24 +120,26 @@ class SmoothScrollFrame(ctk.CTkScrollableFrame):
 
 
 class SkeletonCard(ctk.CTkFrame):
-    # gray placeholder that has the same size as a real movie card
+    # gray placeholder that has the same size as a real card
+    # image_height is different for movies, music and games
 
-    def __init__(self, master, scale=1.0):
+    def __init__(self, master, scale=1.0, image_height=225):
         super().__init__(master, width=180, fg_color=CARD, corner_radius=10)
 
-        width = int(150 * scale)
-        height = int(300 * scale)
+        s = scale
+        h = image_height
+        width = int(150 * s)
+        height = int((h + 75) * s)
         self.canvas = tk.Canvas(
             self, width=width, height=height, bg=CARD, highlightthickness=0
         )
         self.canvas.pack(padx=15, pady=15)
 
-        s = scale
         self.shapes = [
-            round_rect(self.canvas, 0, 0, width, 225 * s, 8 * s, CARD),
-            round_rect(self.canvas, 0, 240 * s, 130 * s, 254 * s, 5 * s, CARD),
-            round_rect(self.canvas, 0, 260 * s, 90 * s, 272 * s, 5 * s, CARD),
-            round_rect(self.canvas, 0, 284 * s, 100 * s, 296 * s, 5 * s, CARD),
+            round_rect(self.canvas, 0, 0, width, h * s, 8 * s, CARD),
+            round_rect(self.canvas, 0, (h + 15) * s, 130 * s, (h + 29) * s, 5 * s, CARD),
+            round_rect(self.canvas, 0, (h + 35) * s, 90 * s, (h + 47) * s, 5 * s, CARD),
+            round_rect(self.canvas, 0, (h + 59) * s, 100 * s, (h + 71) * s, 5 * s, CARD),
         ]
 
     def set_color(self, color):

@@ -2,10 +2,10 @@ import re
 import sqlite3
 
 import api
+import common
 import database
 
-# music and game get added here in the next sprint
-ALLOWED_CATEGORIES = ("movie", "tv")
+ALLOWED_CATEGORIES = ("movie", "tv", "music", "game")
 MAX_FAVORITES = 200
 ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,40}")
 
@@ -32,6 +32,8 @@ def clean_item(category, item):
         raise ValueError("This title cannot be saved.")
     title = title.strip()[:200]
 
+    subtitle = common.clean_text(item.get("subtitle"), 100)
+
     year = item.get("year")
     if not isinstance(year, str) or len(year) > 10:
         year = "TBA"
@@ -42,22 +44,26 @@ def clean_item(category, item):
         rating = 0
     rating = round(min(max(rating, 0), 10), 1)
 
-    image = item.get("poster_path")
-    if image is not None:
-        if not (isinstance(image, str) and api.POSTER_PATTERN.fullmatch(image)):
-            image = None
+    # pictures and links are only saved if they come from an allowed server
+    image = item.get("image")
+    if not common.is_image_url(image):
+        image = None
+
+    link = item.get("link")
+    if not common.is_safe_link(link):
+        link = None
 
     overview = item.get("overview")
     if not isinstance(overview, str):
         overview = ""
     overview = overview[:1000]
 
-    return item_id, title, year, rating, image, overview
+    return item_id, title, subtitle, year, rating, image, overview, link
 
 
 def toggle(user_id, category, item):
     # returns True if the title is now saved, False if it was removed
-    item_id, title, year, rating, image, overview = clean_item(category, item)
+    item_id, title, subtitle, year, rating, image, overview, link = clean_item(category, item)
 
     try:
         if database.remove_favorite(user_id, category, item_id):
@@ -69,7 +75,8 @@ def toggle(user_id, category, item):
             )
 
         database.add_favorite(
-            user_id, category, item_id, title, year, rating, image, overview
+            user_id, category, item_id, title, subtitle, year, rating,
+            image, overview, link,
         )
         return True
     except sqlite3.Error:
@@ -92,13 +99,27 @@ def all_for(user_id):
 
     items = []
     for row in rows:
+        image = row[6]
+
+        # favorites saved in the first version only kept the poster path
+        if isinstance(image, str) and api.POSTER_PATTERN.fullmatch(image):
+            image = api.IMAGE_URL + image
+        if not common.is_image_url(image):
+            image = None
+
+        link = row[8]
+        if not common.is_safe_link(link):
+            link = None
+
         items.append({
             "category": row[0],
             "id": row[1],
             "title": row[2],
-            "year": row[3] or "TBA",
-            "rating": row[4] or 0,
-            "poster_path": row[5],
-            "overview": row[6] or "",
+            "subtitle": row[3] or "",
+            "year": row[4] or "TBA",
+            "rating": row[5] or 0,
+            "image": image,
+            "overview": row[7] or "",
+            "link": link,
         })
     return items

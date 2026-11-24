@@ -6,23 +6,46 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageOps
 
-import api
+import common
 import favorites
-from details import DetailsWindow
+import providers
+from details import DetailsWindow, CATEGORY_NAMES
 from theme import (BG, FIELD, CARD, CARD_HOVER, TOPBAR, RED, RED_HOVER, GRAY,
                    ERROR, HEART, SKELETON_DARK, SKELETON_LIGHT)
 from widgets import SmoothScrollFrame, SkeletonCard, blend
 
-# posters are small, so a huge picture is not a real poster
-Image.MAX_IMAGE_PIXELS = 5000000
+# pictures are small, so a huge picture is not a real cover
+Image.MAX_IMAGE_PIXELS = 12000000
 
 MAX_COLUMNS = 8
-POSTER_SIZE = (150, 225)
 SLOT_WIDTH = 196        # card width plus the space around it
 SKELETON_COUNT = 10
 SEARCH_COOLDOWN = 0.4   # seconds between searches
+
+
+# words used in the "nothing saved" messages
+PLURAL_NAMES = {"movie": "movies", "tv": "TV shows", "music": "songs", "game": "games"}
+SINGLE_NAMES = {"movie": "movie", "tv": "TV show", "music": "song", "game": "game"}
+
+
+def card_text(item):
+    # the small text under the title: artist or genres, year, rating
+    lines = []
+    subtitle = item.get("subtitle") or ""
+    if subtitle:
+        if len(subtitle) > 24:
+            subtitle = subtitle[:24] + "..."
+        lines.append(subtitle)
+
+    info = item["year"]
+    if item["rating"] > 0:
+        info = info + "   \u2605 " + str(item["rating"])
+    elif item["category"] != "music":
+        info = info + "   Not rated yet"
+    lines.append(info)
+    return "\n".join(lines)
 
 
 class HomeFrame(ctk.CTkFrame):
@@ -32,7 +55,7 @@ class HomeFrame(ctk.CTkFrame):
         self.username = username
         self.on_logout = on_logout
 
-        self.kind = "movie"          # "movie" or "tv" (what the switch says)
+        self.kind = "movie"          # movie, tv, music or game (the switch)
         self.result_kind = "movie"   # the type of the results on the screen
         self.view = "browse"         # "browse" or "favorites"
         self.last_query = ""         # empty means show the popular list
@@ -44,12 +67,18 @@ class HomeFrame(ctk.CTkFrame):
         self.shown = 0               # how many of them are visible
         self.skeleton_cards = []
         self.poster_labels = {}
-        self.poster_bytes = {}       # kept so the popup can show the poster
+        self.poster_images = {}      # kept so the popup can show the picture
+        self.card_sizes = {}
         self.hearts = {}             # key -> heart button
         self.cards_by_key = {}       # key -> card
         self.saved_keys = set()      # keys of the titles this user saved
         self.details = None          # the popup window, if one is open
+        self.footer_url = None
         self.pulse_phase = 0
+
+        self.fav_category = None     # which favorites tab is open (None = All)
+        self.fav_label_map: dict[str, str | None] = {}   # tab label -> category (None = All)
+        self.fav_values = []         # the labels now on the tabs
 
         # timers, so they can all be stopped when leaving this screen
         self.jobs = {}
@@ -90,7 +119,7 @@ class HomeFrame(ctk.CTkFrame):
         bar.pack_propagate(False)
 
         ctk.CTkLabel(
-            bar, text="MovieHub", font=("Segoe UI", 24, "bold"),
+            bar, text="MediaHub", font=("Segoe UI", 24, "bold"),
             text_color=RED,
         ).pack(side="left", padx=(25, 15))
 
@@ -116,7 +145,7 @@ class HomeFrame(ctk.CTkFrame):
         self.fav_button.pack(side="right", padx=(0, 15))
 
         self.type_switch = ctk.CTkSegmentedButton(
-            bar, values=["Movies", "TV Shows"], command=self.change_type,
+            bar, values=list(providers.LABELS), command=self.change_type,
             fg_color=FIELD, selected_color=RED,
             selected_hover_color=RED_HOVER, unselected_color=FIELD,
             unselected_hover_color="#3a3a3a",
@@ -133,7 +162,7 @@ class HomeFrame(ctk.CTkFrame):
 
         # the search box takes all the space that is left
         self.search_entry = ctk.CTkEntry(
-            bar, placeholder_text="Search movies or TV shows", width=180,
+            bar, placeholder_text="Search movies", width=150,
             height=40, fg_color=FIELD, border_width=0,
         )
         self.search_entry.pack(side="left", fill="x", expand=True)
@@ -151,8 +180,26 @@ class HomeFrame(ctk.CTkFrame):
         )
         self.status.pack(fill="x", padx=30, pady=(2, 5))
 
+        # the credit line for the data source (the sources ask for this)
+        self.footer = ctk.CTkLabel(
+            self, text="", font=("Segoe UI", 11), text_color=GRAY, anchor="w",
+        )
+        self.footer.pack(side="bottom", fill="x", padx=30, pady=(0, 8))
+        self.footer.bind("<Button-1>", self.open_footer_link)
+
+        # category tabs, only shown in the Saved view
+        # (they live in their own small frame, so there is a fixed place for them)
+        self.filter_holder = ctk.CTkFrame(self, height=0, fg_color="transparent")
+        self.filter_holder.pack(fill="x")
+        self.fav_filter = ctk.CTkSegmentedButton(
+            self.filter_holder, values=["All"], command=self.change_fav_filter,
+            fg_color=FIELD, selected_color=RED,
+            selected_hover_color=RED_HOVER, unselected_color=FIELD,
+            unselected_hover_color="#3a3a3a",
+        )
+
         self.grid_area = SmoothScrollFrame(self, fg_color="transparent")
-        self.grid_area.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        self.grid_area.pack(fill="both", expand=True, padx=20, pady=(0, 5))
         for col in range(self.columns):
             self.grid_area.grid_columnconfigure(col, weight=1)
 
@@ -161,6 +208,24 @@ class HomeFrame(ctk.CTkFrame):
             self.fav_button.configure(fg_color=RED, border_width=0, hover_color=RED_HOVER)
         else:
             self.fav_button.configure(fg_color="transparent", border_width=1, hover_color=FIELD)
+
+    def update_footer(self):
+        if self.view == "favorites":
+            text = providers.ALL_ATTRIBUTION
+            self.footer_url = None
+        else:
+            provider = providers.PROVIDERS[self.kind]
+            text = provider["attribution"]
+            self.footer_url = provider["attribution_url"]
+
+        if self.footer_url:
+            self.footer.configure(text=text, cursor="hand2")
+        else:
+            self.footer.configure(text=text, cursor="arrow")
+
+    def open_footer_link(self, event):
+        if self.footer_url:
+            common.open_link(self.footer_url)
 
     # ---------- responsive layout ----------
 
@@ -208,10 +273,7 @@ class HomeFrame(ctk.CTkFrame):
         self.load_results()
 
     def change_type(self, value):
-        if value == "Movies":
-            self.kind = "movie"
-        else:
-            self.kind = "tv"
+        self.kind = providers.LABELS[value]
         self.load_results()
 
     def back_to_popular(self):
@@ -229,23 +291,24 @@ class HomeFrame(ctk.CTkFrame):
         self.view = "browse"
         self.result_kind = self.kind
         self.update_fav_button()
+        self.update_footer()
+        self.fav_filter.pack_forget()
+        self.type_switch.set(providers.PROVIDERS[self.kind]["label"])
+
+        provider = providers.PROVIDERS[self.kind]
+        self.search_entry.configure(placeholder_text=provider["placeholder"])
 
         self.status.configure(text="Loading...", text_color=GRAY)
         self.show_skeleton()
 
-        if self.kind == "movie":
-            label = "Movies"
-        else:
-            label = "TV Shows"
-
         if self.last_query == "":
-            self.heading.configure(text="Popular " + label)
-            func = api.get_popular
-            args = (self.kind,)
+            self.heading.configure(text=provider["popular_title"])
+            func = provider["popular"]
+            args = ()
         else:
             self.heading.configure(text='Results for "' + self.last_query + '"')
-            func = api.search
-            args = (self.kind, self.last_query)
+            func = provider["search"]
+            args = (self.last_query,)
 
         threading.Thread(
             target=self.worker, args=(this_id, func, args), daemon=True
@@ -256,17 +319,20 @@ class HomeFrame(ctk.CTkFrame):
         try:
             results = func(*args)
             self.queue.put(("results", search_id, results))
-        except api.ApiError as error:
+        except common.ApiError as error:
             self.queue.put(("error", search_id, (str(error), error.code)))
         except Exception:
             self.queue.put(("error", search_id, ("Something went wrong.", "server")))
 
-    def load_poster(self, search_id, index, path):
+    def load_image(self, search_id, index, url):
+        # also runs in the background: download, open and shrink the picture
         try:
-            data = api.get_poster(path)
+            data = common.get_image(url)
+            image = Image.open(io.BytesIO(data)).convert("RGB")
+            image.thumbnail((600, 600))
         except Exception:
-            data = None
-        self.queue.put(("poster", search_id, (index, data)))
+            image = None
+        self.queue.put(("poster", search_id, (index, image)))
 
     def check_queue(self):
         try:
@@ -293,10 +359,20 @@ class HomeFrame(ctk.CTkFrame):
             self.open_favorites()
 
     def open_favorites(self):
-        # a new id so answers from an older search are ignored
-        self.search_id += 1
+        self.fav_category = None   # always start with everything
         self.view = "favorites"
         self.update_fav_button()
+        self.update_footer()
+
+        # no category is selected at the top while we look at favorites
+        self.type_switch.set("")
+
+        self.fav_filter.pack(anchor="w", padx=30, pady=(0, 8))
+        self.show_favorites()
+
+    def show_favorites(self):
+        # a new id so answers from an older search are ignored
+        self.search_id += 1
         self.heading.configure(text="My Favorites")
         self.status.configure(text="", text_color=GRAY)
         self.grid_area.scroll_to_top()
@@ -306,21 +382,88 @@ class HomeFrame(ctk.CTkFrame):
         except ValueError as error:
             self.show_message_panel(
                 "Can't open your favorites", str(error),
-                "Try again", self.open_favorites,
+                "Try again", self.show_favorites,
             )
             return
+
+        # the tabs always count everything, even when one tab is open
+        self.update_fav_filter(saved)
+
+        if self.fav_category is not None:
+            saved = [item for item in saved if item["category"] == self.fav_category]
 
         if len(saved) == 0:
             self.show_no_favorites()
             return
-        self.render_items(saved, str(len(saved)) + " saved")
+
+        # movies first, then TV, music and games. Newest first inside each group
+        order = {}
+        for number, category in enumerate(providers.ORDER):
+            order[category] = number
+        saved.sort(key=lambda item: order.get(item["category"], 99))
+
+        self.render_items(saved, self.saved_text(len(saved)), True)
+
+    def saved_text(self, count):
+        if self.fav_category is None:
+            return str(count) + " saved"
+        label = providers.PROVIDERS[self.fav_category]["label"]
+        return str(count) + " saved in " + label
+
+    def update_fav_filter(self, saved=None):
+        # the tab names show how many titles are saved in each category
+        if saved is None:
+            try:
+                keys = favorites.saved_keys(self.user_id)
+            except ValueError:
+                return
+            categories = [key.split(":")[0] for key in keys]
+        else:
+            categories = [item["category"] for item in saved]
+
+        self.fav_label_map = {"All (" + str(len(categories)) + ")": None}
+        for category in providers.ORDER:
+            label = providers.PROVIDERS[category]["label"]
+            count = categories.count(category)
+            self.fav_label_map[label + " (" + str(count) + ")"] = category
+
+        # the tabs are only rebuilt when a number changed, never while one is being clicked
+        labels = list(self.fav_label_map)
+        if labels != self.fav_values:
+            self.fav_filter.configure(values=labels)
+            self.fav_values = labels
+
+        for label, category in self.fav_label_map.items():
+            if category == self.fav_category:
+                self.fav_filter.set(label)
+
+    def change_fav_filter(self, label):
+        self.fav_category = self.fav_label_map.get(label)
+        self.show_favorites()
+
+    def go_browse(self, category):
+        self.kind = category
+        self.last_query = ""
+        self.search_entry.delete(0, "end")
+        self.winfo_toplevel().focus_set()
+        self.load_results()
 
     def show_no_favorites(self):
         self.status.configure(text="", text_color=GRAY)
+
+        if self.fav_category is None:
+            self.show_message_panel(
+                "No favorites yet",
+                "Click the heart on any movie, song or game to save it here.",
+                "Browse titles", self.load_results,
+            )
+            return
+
+        category = self.fav_category
         self.show_message_panel(
-            "No favorites yet",
-            "Click the heart on any movie or show to save it here.",
-            "Browse titles", self.load_results,
+            "No saved " + PLURAL_NAMES[category] + " yet",
+            "Click the heart on any " + SINGLE_NAMES[category] + " to save it here.",
+            "Browse " + PLURAL_NAMES[category], lambda: self.go_browse(category),
         )
 
     def toggle_favorite(self, item):
@@ -344,6 +487,7 @@ class HomeFrame(ctk.CTkFrame):
         # in the favorites list a removed title disappears
         if self.view == "favorites" and not now_saved:
             self.remove_card(key)
+            self.update_fav_filter()
 
         return now_saved, ""
 
@@ -371,7 +515,7 @@ class HomeFrame(ctk.CTkFrame):
             self.show_no_favorites()
         else:
             self.status.configure(
-                text=str(len(self.items)) + " saved", text_color=GRAY
+                text=self.saved_text(len(self.items)), text_color=GRAY
             )
 
     def open_details(self, item, index):
@@ -386,9 +530,11 @@ class HomeFrame(ctk.CTkFrame):
             key = favorites.make_key(item["category"], item["id"])
             saved = key in self.saved_keys
 
+        provider = providers.PROVIDERS[item["category"]]
         self.details = DetailsWindow(
-            self, item, self.poster_bytes.get(index), saved,
+            self, item, self.poster_images.get(index), saved,
             lambda: self.toggle_favorite(item),
+            provider["trailer"], provider["link_text"],
         )
 
     # ---------- what is shown in the grid ----------
@@ -402,7 +548,8 @@ class HomeFrame(ctk.CTkFrame):
         self.shown = 0
         self.skeleton_cards = []
         self.poster_labels = {}
-        self.poster_bytes = {}
+        self.poster_images = {}
+        self.card_sizes = {}
         self.hearts = {}
         self.cards_by_key = {}
 
@@ -410,8 +557,12 @@ class HomeFrame(ctk.CTkFrame):
         self.clear_grid()
         self.grid_area.scroll_to_top()
 
+        # the gray cards have the same shape as the real cards will have
+        image_height = providers.PROVIDERS[self.kind]["image_size"][1]
         for i in range(SKELETON_COUNT):
-            self.skeleton_cards.append(SkeletonCard(self.grid_area, self.scale))
+            self.skeleton_cards.append(
+                SkeletonCard(self.grid_area, self.scale, image_height)
+            )
         self.items = list(self.skeleton_cards)
         self.shown = len(self.items)
         self.relayout()
@@ -431,7 +582,7 @@ class HomeFrame(ctk.CTkFrame):
             self.show_empty()
             return
 
-        # remember which type these results are, the API does not say
+        # remember which type these results are
         items = []
         for result in results:
             item = dict(result)
@@ -439,7 +590,7 @@ class HomeFrame(ctk.CTkFrame):
             items.append(item)
         self.render_items(items, str(len(items)) + " results")
 
-    def render_items(self, items, status_text):
+    def render_items(self, items, status_text, show_tags=False):
         self.clear_grid()
 
         try:
@@ -450,11 +601,10 @@ class HomeFrame(ctk.CTkFrame):
         self.status.configure(text=status_text, text_color=GRAY)
 
         for index, item in enumerate(items):
-            self.items.append(self.make_card(item, index))
-            if item["poster_path"]:
+            self.items.append(self.make_card(item, index, show_tags))
+            if item.get("image"):
                 self.pool.submit(
-                    self.load_poster, self.search_id, index,
-                    item["poster_path"],
+                    self.load_image, self.search_id, index, item["image"],
                 )
         self.reveal()
 
@@ -492,7 +642,7 @@ class HomeFrame(ctk.CTkFrame):
         if self.last_query == "":
             self.show_message_panel(
                 "Nothing to show right now",
-                "The movie list is temporarily unavailable. "
+                "The list is temporarily unavailable. "
                 "Please try again in a moment.",
                 "Try again", self.load_results,
             )
@@ -516,33 +666,44 @@ class HomeFrame(ctk.CTkFrame):
             text = "Check your internet connection and try again."
         elif code == "busy":
             title = "Too many requests"
-            text = "The movie service is busy. Wait a few seconds and try again."
+            text = "The service is busy. Wait a few seconds and try again."
         elif code == "key":
             title = "API key problem"
-            text = message + " Check the TMDB_API_KEY line in your .env file."
+            text = message + " Check the key in your .env file."
         else:
-            title = "Movies are temporarily unavailable"
+            title = "Temporarily unavailable"
             text = message + " Please try again in a moment."
 
         self.show_message_panel(title, text, "Try again", self.load_results)
 
-    def make_card(self, item, index):
+    def make_card(self, item, index, show_tag=False):
+        size = providers.PROVIDERS[item["category"]]["image_size"]
+        self.card_sizes[index] = size
+
         card = ctk.CTkFrame(
             self.grid_area, width=180, fg_color=CARD, corner_radius=10
         )
 
-        if item["poster_path"]:
+        if item.get("image"):
             poster_text = "Loading..."
         else:
             poster_text = "No Image"
 
         poster = ctk.CTkLabel(
-            card, text=poster_text, width=POSTER_SIZE[0],
-            height=POSTER_SIZE[1], fg_color=FIELD, corner_radius=8,
-            text_color=GRAY,
+            card, text=poster_text, width=size[0], height=size[1],
+            fg_color=FIELD, corner_radius=8, text_color=GRAY,
         )
         poster.pack(padx=15, pady=(15, 8))
         self.poster_labels[index] = poster
+
+        # in the Saved view every card says what it is (MOVIE, SONG, GAME...)
+        tag_label = None
+        if show_tag:
+            tag_label = ctk.CTkLabel(
+                card, text=CATEGORY_NAMES.get(item["category"], "Title").upper(),
+                font=("Segoe UI", 10, "bold"), text_color=RED, anchor="w",
+            )
+            tag_label.pack(padx=15, anchor="w")
 
         title = item["title"]
         if len(title) > 30:
@@ -553,20 +714,19 @@ class HomeFrame(ctk.CTkFrame):
         )
         title_label.pack(padx=15)
 
-        if item["rating"] > 0:
-            rating = "\u2605 " + str(item["rating"])
-        else:
-            rating = "Not rated yet"
         info_label = ctk.CTkLabel(
-            card, text=item["year"] + "   " + rating, font=("Segoe UI", 12),
-            text_color=GRAY, anchor="w",
+            card, text=card_text(item), font=("Segoe UI", 12),
+            text_color=GRAY, anchor="w", justify="left",
         )
         info_label.pack(padx=15, pady=(2, 15), anchor="w")
 
         # clicking the card opens the details popup
-        self.add_card_events(card, [card, poster, title_label, info_label], item, index)
+        clickable = [card, poster, title_label, info_label]
+        if tag_label is not None:
+            clickable.append(tag_label)
+        self.add_card_events(card, clickable, item, index)
 
-        # the heart button sits on the top right corner of the poster
+        # the heart button sits on the top right corner of the picture
         if item.get("id") is not None:
             key = favorites.make_key(item["category"], item["id"])
             heart = ctk.CTkButton(
@@ -602,20 +762,22 @@ class HomeFrame(ctk.CTkFrame):
                 pass
 
     def show_poster(self, data):
-        index, image_bytes = data
+        index, image = data
         label = self.poster_labels.get(index)
         if label is None or not label.winfo_exists():
             return
 
-        if image_bytes is None:
+        if image is None:
             label.configure(text="No Image")
             return
 
-        self.poster_bytes[index] = image_bytes
+        self.poster_images[index] = image
+        size = self.card_sizes.get(index, (150, 225))
         try:
-            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            # cut the picture to the shape of the card, twice as big so it stays sharp
+            fitted = ImageOps.fit(image, (size[0] * 2, size[1] * 2))
             picture = ctk.CTkImage(
-                light_image=image, dark_image=image, size=POSTER_SIZE
+                light_image=fitted, dark_image=fitted, size=size
             )
             label.configure(image=picture, text="")
         except Exception:

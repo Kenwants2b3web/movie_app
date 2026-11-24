@@ -41,7 +41,7 @@ def create_tables():
             )
         """)
 
-        # one table for every category (movie, tv, later music and game)
+        # one table for every category (movie, tv, music and game)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS favorites (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,14 +49,24 @@ def create_tables():
                 category TEXT NOT NULL,
                 item_id TEXT NOT NULL,
                 title TEXT NOT NULL,
+                subtitle TEXT,
                 year TEXT,
                 rating REAL,
                 image TEXT,
                 overview TEXT,
+                link TEXT,
                 UNIQUE (user_id, category, item_id),
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
             )
         """)
+
+        # favorites saved before music and games exist miss two columns
+        cur.execute("PRAGMA table_info(favorites)")
+        favorite_columns = [row[1] for row in cur.fetchall()]
+        if "subtitle" not in favorite_columns:
+            cur.execute("ALTER TABLE favorites ADD COLUMN subtitle TEXT")
+        if "link" not in favorite_columns:
+            cur.execute("ALTER TABLE favorites ADD COLUMN link TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -190,15 +200,17 @@ def count_favorites(user_id):
         conn.close()
 
 
-def add_favorite(user_id, category, item_id, title, year, rating, image, overview):
+def add_favorite(user_id, category, item_id, title, subtitle, year, rating,
+                 image, overview, link):
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO favorites "
-            "(user_id, category, item_id, title, year, rating, image, overview) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, category, item_id, title, year, rating, image, overview),
+            "(user_id, category, item_id, title, subtitle, year, rating, "
+            "image, overview, link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, category, item_id, title, subtitle, year, rating,
+             image, overview, link),
         )
         conn.commit()
         return True
@@ -242,8 +254,8 @@ def get_favorites(user_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT category, item_id, title, year, rating, image, overview "
-            "FROM favorites WHERE user_id = ? ORDER BY id DESC",
+            "SELECT category, item_id, title, subtitle, year, rating, image, "
+            "overview, link FROM favorites WHERE user_id = ? ORDER BY id DESC",
             (user_id,),
         )
         return cur.fetchall()

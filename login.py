@@ -26,12 +26,12 @@ class LoginFrame(ctk.CTkFrame):
         side.pack_propagate(False)
 
         ctk.CTkLabel(
-            side, text="MovieHub", font=("Segoe UI", 36, "bold"),
+            side, text="MediaHub", font=("Segoe UI", 36, "bold"),
             text_color="white",
         ).pack(pady=(150, 5))
 
         ctk.CTkLabel(
-            side, text="Find movies and TV shows.\nSave the ones you love.",
+            side, text="Movies, music and games.\nSave the ones you love.",
             font=("Segoe UI", 14), text_color="#f0c4c7", justify="center",
         ).pack()
 
@@ -177,6 +177,7 @@ class LoginFrame(ctk.CTkFrame):
         self.main_button.configure(state="disabled", text="Please wait...")
         self.update_idletasks()
 
+        name = ""
         if self.mode == "login":
             ok, msg, name = auth.login(username, password)
         else:

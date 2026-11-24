@@ -11,7 +11,7 @@ ctk.set_appearance_mode("dark")
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("MovieHub")
+        self.title("MediaHub")
         self.configure(fg_color=BG)
         self.show_login()
 
@@ -19,6 +19,11 @@ class App(ctk.CTk):
         # customtkinter makes the window bigger on high DPI screens,
         # so the size has to be scaled here too
         scale = ctk.ScalingTracker.get_window_scaling(self)
+
+        # a small screen should never get a window bigger than itself
+        width = min(width, int((self.winfo_screenwidth() - 40) / scale))
+        height = min(height, int((self.winfo_screenheight() - 90) / scale))
+
         x = int((self.winfo_screenwidth() - width * scale) / 2)
         y = int((self.winfo_screenheight() - height * scale) / 2)
         x = max(x, 0)
@@ -45,9 +50,9 @@ class App(ctk.CTk):
             return
 
         self.clear()
-        self.center(1100, 650)
+        self.center(1150, 680)
         self.resizable(True, True)
-        self.minsize(980, 560)
+        self.minsize(1020, 560)
         HomeFrame(self, user_id, username, self.show_login).pack(fill="both", expand=True)
 
 
